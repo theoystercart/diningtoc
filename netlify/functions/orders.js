@@ -1,32 +1,69 @@
-// Netlify Function — Order storage and email notifications
-// Uses Netlify Blobs for storage and Resend for email
-
 const TELEGRAM_BOT_TOKEN = '8750358475:AAHktaxxeCVDro2s3X0O4l7Xhxjia4iAfEw';
 const TELEGRAM_CHAT_ID = '7276702024';
 const SITE_URL = 'https://diningtoc.netlify.app';
 
-// ── Send Telegram message helper ───────────────────────
+const headers = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Content-Type': 'application/json'
+};
+
 async function sendTelegram(chatId, text) {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true
-    })
-  });
+  try {
+    await fetch('https://api.telegram.org/bot' + TELEGRAM_BOT_TOKEN + '/sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true
+      })
+    });
+  } catch(e) {
+    console.error('Telegram error:', e.message);
+  }
 }
 
-exports.handler = async (event) => {
-  const headers = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Content-Type': 'application/json'
-  };
+async function getOrders(store, todayKey) {
+  try {
+    const raw = await store.get('orders_' + todayKey);
+    if (raw) return JSON.parse(raw);
+  } catch(e) {}
+  return [];
+}
 
+async function saveOrders(store, todayKey, orders) {
+  await store.set('orders_' + todayKey, JSON.stringify(orders));
+}
+
+function getTodayKey() {
+  const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return nowSGT.toISOString().slice(0, 10);
+}
+
+function getSGTTime() {
+  const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const h = nowSGT.getUTCHours();
+  const m = String(nowSGT.getUTCMinutes()).padStart(2, '0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  const h12 = (h % 12) || 12;
+  return h12 + ':' + m + ' ' + ampm;
+}
+
+function getSGTDateTime() {
+  const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const yyyy = nowSGT.getUTCFullYear();
+  const mm = String(nowSGT.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(nowSGT.getUTCDate()).padStart(2, '0');
+  const hh = String(nowSGT.getUTCHours()).padStart(2, '0');
+  const min = String(nowSGT.getUTCMinutes()).padStart(2, '0');
+  const sec = String(nowSGT.getUTCSeconds()).padStart(2, '0');
+  return yyyy + '-' + mm + '-' + dd + ' ' + hh + ':' + min + ':' + sec;
+}
+
+exports.handler = async function(event) {
   // Handle preflight
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers, body: '' };
@@ -34,211 +71,127 @@ exports.handler = async (event) => {
 
   const { getStore } = require('@netlify/blobs');
   const store = getStore('orders');
+  const todayKey = getTodayKey();
 
-  // ── POST from Telegram webhook (bot commands) ─────────
-  if (event.httpMethod === 'POST' && event.headers['content-type']?.includes('application/json')) {
-    try {
-      const body = JSON.parse(event.body);
-      // Check if it's a Telegram webhook update (has message.text starting with /)
-      if (body.message?.text?.startsWith('/')) {
-        const chatId = body.message.chat.id;
-        const cmd = body.message.text.split(' ')[0].toLowerCase();
+  // ── Telegram webhook (bot commands) ──────────────────
+  if (event.httpMethod === 'POST' && event.headers['content-type'] && event.headers['content-type'].includes('application/json')) {
+    let body;
+    try { body = JSON.parse(event.body); } catch(e) { body = null; }
 
-        if (cmd === '/total' || cmd === '/sales') {
-          // Calculate today's grand total from stored orders
-          const { getStore } = require('@netlify/blobs');
-          const store = getStore('orders');
-          const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
-          const todayKey = nowSGT.toISOString().slice(0, 10);
+    if (body && body.message && body.message.text && body.message.text.startsWith('/')) {
+      const chatId = body.message.chat.id;
+      const cmd = body.message.text.split(' ')[0].toLowerCase();
 
-          let orders = [];
-          try {
-            const raw = await store.get(`orders_${todayKey}`);
-            if (raw) orders = JSON.parse(raw);
-          } catch(e) { orders = []; }
+      if (cmd === '/total' || cmd === '/sales') {
+        const orders = await getOrders(store, todayKey);
+        const grandTotal = orders.reduce(function(sum, o) { return sum + (parseFloat(o.total) || 0); }, 0);
+        const orderCount = orders.length;
 
-          const grandTotal = orders.reduce((sum, o) => sum + (parseFloat(o.total) || 0), 0);
-          const orderCount = orders.length;
+        const byTable = {};
+        orders.forEach(function(o) {
+          const t = o.tableNumber || '?';
+          if (!byTable[t]) byTable[t] = 0;
+          byTable[t] += parseFloat(o.total) || 0;
+        });
 
-          // Break down by table
-          const byTable = {};
-          orders.forEach(o => {
-            const t = o.tableNumber || '?';
-            if (!byTable[t]) byTable[t] = 0;
-            byTable[t] += parseFloat(o.total) || 0;
-          });
+        const tableLines = Object.entries(byTable)
+          .sort(function(a, b) { return b[1] - a[1]; })
+          .map(function(entry) { return '  Table ' + entry[0] + ': SGD ' + entry[1].toFixed(2); })
+          .join('\n');
 
-          const tableBreakdown = Object.entries(byTable)
-            .sort((a,b) => b[1]-a[1])
-            .map(([t, amt]) => `  Table ${t}: SGD ${amt.toFixed(2)}`)
-            .join('
-');
+        await sendTelegram(chatId,
+          'The Oyster Cart - Daily Sales\n' +
+          '========================\n' +
+          'Date: ' + todayKey + ' | ' + getSGTTime() + ' SGT\n\n' +
+          orderCount + ' order(s) today\n\n' +
+          (tableLines || '  No orders yet') + '\n\n' +
+          'GRAND TOTAL: SGD ' + grandTotal.toFixed(2)
+        );
 
-          const now = nowSGT;
-          let h = now.getUTCHours(), mm = String(now.getUTCMinutes()).padStart(2,'0');
-          const ap = h>=12?'pm':'am'; h=h%12||12;
-
-          await sendTelegram(chatId, `🦪 *The Oyster Cart — Daily Sales*
-━━━━━━━━━━━━━━━━━━━━━━
-📅 ${todayKey} | 🕐 ${h}:${mm} ${ap} SGT
-
-📊 *${orderCount} order${orderCount!==1?'s':''} today*
-
-${tableBreakdown || '  No orders yet'}
-
-━━━━━━━━━━━━━━━━━━━━━━
-💰 *GRAND TOTAL: SGD ${grandTotal.toFixed(2)}*`);
-
-        } else if (cmd === '/orders') {
-          // Show today's order count and list
-          const { getStore } = require('@netlify/blobs');
-          const store = getStore('orders');
-          const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
-          const todayKey = nowSGT.toISOString().slice(0, 10);
-
-          let orders = [];
-          try {
-            const raw = await store.get(`orders_${todayKey}`);
-            if (raw) orders = JSON.parse(raw);
-          } catch(e) { orders = []; }
-
-          if (!orders.length) {
-            await sendTelegram(chatId, '🦪 No orders yet today.');
-          } else {
-            const list = orders.map((o, i) =>
-              `${i+1}. Table ${o.tableNumber} — SGD ${parseFloat(o.total).toFixed(2)} (${o.receivedAt?.slice(11,16) || '—'})`
-            ).join('
-');
-            await sendTelegram(chatId, `🦪 *Today's Orders*
-━━━━━━━━━━━━━━━━━━━━━━
-${list}`);
-          }
-
-        } else if (cmd === '/help') {
-          await sendTelegram(chatId, `🦪 *The Oyster Cart Bot*
-━━━━━━━━━━━━━━━━━━━━━━
-Available commands:
-
-/total — Grand total sales for today
-/orders — List all orders today
-/help — Show this message`);
-
+      } else if (cmd === '/orders') {
+        const orders = await getOrders(store, todayKey);
+        if (!orders.length) {
+          await sendTelegram(chatId, 'No orders yet today.');
         } else {
-          await sendTelegram(chatId, '🦪 Unknown command. Send /help for available commands.');
+          const list = orders.map(function(o, i) {
+            return (i + 1) + '. Table ' + o.tableNumber + ' - SGD ' + parseFloat(o.total).toFixed(2) + ' (' + (o.receivedAt ? o.receivedAt.slice(11, 16) : '--') + ')';
+          }).join('\n');
+          await sendTelegram(chatId, "Today's Orders\n========================\n" + list);
         }
 
-        return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
+      } else if (cmd === '/help') {
+        await sendTelegram(chatId,
+          'The Oyster Cart Bot\n' +
+          '========================\n' +
+          '/total - Grand total sales today\n' +
+          '/orders - List all orders today\n' +
+          '/help - Show this message'
+        );
+      } else {
+        await sendTelegram(chatId, 'Unknown command. Send /help for available commands.');
       }
-    } catch(e) {
-      console.error('Webhook error:', e.message);
+
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
     }
   }
 
-  // ── GET — fetch today's orders ──────────────────────────
+  // ── GET - fetch today's orders ────────────────────────
   if (event.httpMethod === 'GET') {
     try {
-      // Get today's date in SGT (UTC+8)
-      const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
-      const todayKey = nowSGT.toISOString().slice(0, 10); // "2026-05-08"
-
-      let orders = [];
-      try {
-        const raw = await store.get(`orders_${todayKey}`);
-        if (raw) orders = JSON.parse(raw);
-      } catch (e) {
-        orders = [];
-      }
-
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ orders })
-      };
-    } catch (err) {
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({ error: err.message })
-      };
+      const orders = await getOrders(store, todayKey);
+      return { statusCode: 200, headers, body: JSON.stringify({ orders: orders }) };
+    } catch(err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
     }
   }
 
-  // ── POST — save new order + send email ─────────────────
+  // ── POST - save new order + send Telegram ─────────────
   if (event.httpMethod === 'POST') {
     try {
       const order = JSON.parse(event.body);
 
-      // Validate
       if (!order.tableNumber || !order.lines || !order.lines.length) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid order' }) };
       }
 
-      // Add server timestamp in SGT
-      const nowSGT = new Date(Date.now() + 8 * 60 * 60 * 1000);
-      const todayKey = nowSGT.toISOString().slice(0, 10);
-      order.receivedAt = nowSGT.toISOString().replace('T', ' ').slice(0, 19);
-      order.id = `TOC-${Date.now()}`;
+      order.receivedAt = getSGTDateTime();
+      order.id = 'TOC-' + Date.now();
 
-      // Save to Blobs
-      let orders = [];
-      try {
-        const raw = await store.get(`orders_${todayKey}`);
-        if (raw) orders = JSON.parse(raw);
-      } catch (e) { orders = []; }
-
+      const orders = await getOrders(store, todayKey);
       orders.push(order);
-      await store.set(`orders_${todayKey}`, JSON.stringify(orders));
+      await saveOrders(store, todayKey, orders);
 
-      // ── Send Telegram notification ───────────────────────
-      try {
-        const itemsList = order.lines.map(l =>
-          `  • ${l.name}${l.modifier ? ` (${l.modifier.label})` : ''} ×${l.quantity} — SGD ${(l.unitPrice * l.quantity).toFixed(2)}`
-        ).join('\n');
+      // Send Telegram notification
+      const itemsList = order.lines.map(function(l) {
+        const name = l.name + (l.modifier ? ' (' + l.modifier.label + ')' : '');
+        const amt = (l.unitPrice * l.quantity).toFixed(2);
+        return '  - ' + name + ' x' + l.quantity + ' - SGD ' + amt;
+      }).join('\n');
 
-        const tipLine = order.tip?.percent > 0
-          ? `\nGratuity  : SGD ${order.tip.amount.toFixed(2)} (${order.tip.percent}%)` : '';
+      const tipLine = (order.tip && order.tip.percent > 0)
+        ? '\nGratuity: SGD ' + order.tip.amount.toFixed(2) + ' (' + order.tip.percent + '%)' : '';
 
-        const specialLine = order.specialRequest
-          ? `\n\n⚠️ Special Request: ${order.specialRequest}` : '';
+      const specialLine = order.specialRequest
+        ? '\n\nSPECIAL REQUEST: ' + order.specialRequest : '';
 
-        const message = `🦪 *NEW ORDER — The Oyster Cart*
-━━━━━━━━━━━━━━━━━━━━━━
-🪑 *Table ${order.tableNumber}*  |  🕐 ${order.receivedAt} SGT
-📋 ${order.id}
+      const message =
+        'NEW ORDER - The Oyster Cart\n' +
+        '========================\n' +
+        'Table ' + order.tableNumber + ' | ' + order.receivedAt + ' SGT\n' +
+        order.id + '\n\n' +
+        'ITEMS:\n' + itemsList + '\n' +
+        '========================\n' +
+        'Subtotal: SGD ' + (order.subtotal ? order.subtotal.toFixed(2) : '0.00') + tipLine + '\n' +
+        'TOTAL: SGD ' + (order.total ? order.total.toFixed(2) : '0.00') +
+        specialLine + '\n\n' +
+        'View KDS: ' + SITE_URL;
 
-*ITEMS*
-${itemsList}
-━━━━━━━━━━━━━━━━━━━━━━
-Subtotal  : SGD ${order.subtotal?.toFixed(2) || '0.00'}${tipLine}
-*Total     : SGD ${order.total?.toFixed(2) || '0.00'}*${specialLine}
+      await sendTelegram(TELEGRAM_CHAT_ID, message);
 
-[View KDS](${SITE_URL})`;
+      return { statusCode: 200, headers, body: JSON.stringify({ success: true, orderId: order.id }) };
 
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: TELEGRAM_CHAT_ID,
-            text: message,
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true
-          })
-        });
-      } catch (telegramErr) {
-        console.error('Telegram error:', telegramErr.message);
-      }
-
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ success: true, orderId: order.id })
-      };
-    } catch (err) {
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({ error: err.message })
-      };
+    } catch(err) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
     }
   }
 
