@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Oyster Cart — Table QR Codes</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,400&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f0ece4; font-family: 'DM Sans', sans-serif; padding: 40px; }
+
+  h1 { text-align: center; font-family: 'Cormorant Garamond', serif; font-style: italic; font-size: 28px; color: #1F1A14; margin-bottom: 8px; }
+  .subtitle { text-align: center; font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; color: #8E6D47; margin-bottom: 40px; }
+
+  .print-btn {
+    display: block; margin: 0 auto 40px; padding: 12px 32px;
+    background: #1F1A14; color: #B8956A; border: none; cursor: pointer;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; max-width: 800px; margin: 0 auto; }
+
+  .qr-card {
+    background: #fff; border: 1px solid #D9CFBC; border-top: 3px solid #B8956A;
+    padding: 28px 24px 24px; text-align: center; page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .card-restaurant { font-family: 'Cormorant Garamond', serif; color: #B8956A; font-size: 14px; letter-spacing: 0.25em; text-transform: uppercase; font-weight: 300; margin-bottom: 4px; }
+  .card-table { font-family: 'Cormorant Garamond', serif; font-size: 42px; color: #1F1A14; font-weight: 300; line-height: 1; margin: 12px 0; }
+  .card-table-label { font-size: 10px; letter-spacing: 0.3em; text-transform: uppercase; color: #8E6D47; margin-bottom: 16px; }
+  .qr-wrapper { display: flex; justify-content: center; margin: 16px 0; }
+  .card-instruction { font-family: 'Cormorant Garamond', serif; font-style: italic; font-size: 14px; color: #3A332A; margin-top: 14px; line-height: 1.5; }
+  .card-url { font-size: 9px; color: #8E6D47; margin-top: 8px; letter-spacing: 0.05em; word-break: break-all; opacity: 0.7; }
+  .gold-line { width: 40px; height: 1px; background: linear-gradient(90deg, transparent, #B8956A, transparent); margin: 14px auto 0; }
+
+  @media print {
+    body { background: white; padding: 20px; }
+    .print-btn, h1, .subtitle { display: none; }
+    .grid { gap: 16px; }
+    .qr-card { border: 1px solid #D9CFBC; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Table QR Codes</h1>
+<div class="subtitle">The Oyster Cart · Print and laminate one per table</div>
+<button class="print-btn" onclick="window.print()">🖨 Print All QR Codes</button>
+
+<div class="grid" id="qr-grid"></div>
+
+<script>
+const SITE_URL = 'https://diningtoc.netlify.app';
+const TABLES = 10;
+
+const grid = document.getElementById('qr-grid');
+
+for (let t = 1; t <= TABLES; t++) {
+  const url = `${SITE_URL}/menu.html?table=${t}`;
+
+  const card = document.createElement('div');
+  card.className = 'qr-card';
+  card.innerHTML = `
+    <div class="card-restaurant">The Oyster Cart</div>
+    <div class="card-table-label">Table Number</div>
+    <div class="card-table">${t}</div>
+    <div class="qr-wrapper"><div id="qr-${t}"></div></div>
+    <div class="card-instruction">Scan to view our menu<br>and place your order</div>
+    <div class="card-url">${url}</div>
+    <div class="gold-line"></div>
+  `;
+  grid.appendChild(card);
+
+  new QRCode(document.getElementById(`qr-${t}`), {
+    text: url,
+    width: 160,
+    height: 160,
+    colorDark: '#1F1A14',
+    colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M
+  });
+}
+</script>
+</body>
+</html>
